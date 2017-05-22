@@ -1,0 +1,15 @@
+#!/usr/bin/env ruby
+
+STDERR.sync = STDOUT.sync = true
+
+require 'pathname'
+require 'pg_notifier'
+
+usage = 'pg_notifier <file.rb>'
+file = ARGV.shift or abort usage
+
+file = "./#{file}" unless Pathname.new(file).absolute?
+
+require file
+
+PgNotifier::run
