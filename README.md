@@ -20,7 +20,6 @@ require 'pg_notifier'
 module PgNotifier
   configure do |notifier|
     notifier.logger = Logger.new('/var/log/pg_notifier.log')
-    notifier.timeout = 1
     notifier.db_config = {
       host: 'localhost',
       port: 5432,

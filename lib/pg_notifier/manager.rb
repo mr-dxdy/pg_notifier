@@ -4,17 +4,13 @@ require 'logger'
 
 module PgNotifier
   class Manager
-    attr_accessor :logger, :db_config, :timeout
+    attr_accessor :logger, :db_config
 
     def initialize(attrs = {})
       @logger = attrs.fetch :logger, Logger.new(STDOUT)
       @db_config = attrs.fetch :db_config , {}
-      @timeout = attrs.fetch :timeout, 1
 
       @finish = false
-      @mutex = Mutex.new
-      @resource = ConditionVariable.new
-
       Thread.abort_on_exception = true
     end
 
@@ -55,16 +51,12 @@ module PgNotifier
           end
         end
 
-        @mutex.synchronize do
-          until @finish do
-            connection.wait_for_notify do |channel, pid, payload|
-              logger.info "Notifying channel: #{channel}, pid: #{pid}, payload: #{payload}"
+        until @finish do
+          connection.wait_for_notify do |channel, pid, payload|
+            logger.info "Notifying channel: #{channel}, pid: #{pid}, payload: #{payload}"
 
-              subscriptions = subscriptions_by_channels.fetch channel, []
-              subscriptions.each { |subscription| subscription.notify(channel, pid, payload) }
-            end
-
-            @resource.wait @mutex, timeout
+            subscriptions = subscriptions_by_channels.fetch channel, []
+            subscriptions.each { |subscription| subscription.notify(channel, pid, payload) }
           end
         end
       end
@@ -78,43 +70,19 @@ module PgNotifier
     def handle_signal(sig)
       logger.debug "Got #{sig} signal"
 
-      case sig
-      when 'INT'
-        shutdown
-      when 'TERM'
-        graceful_shutdown
-      when 'HUP'
-        graceful_shutdown
-      end
+      shutdown if %w[INT TERM HUP].include? sig
     end
 
     def shutdown
       logger.info 'Shutting down'
 
       @finish = true
-      close_connection
-
-      exit(0)
-    end
-
-    def close_connection
       unless connection.finished?
         channels.each do |channel|
           connection.exec "UNLISTEN #{channel};"
         end
 
         connection.finish
-      end
-    end
-
-    def graceful_shutdown
-      logger.info 'Gracefully shutting down'
-
-      @finish = true
-
-      @mutex.synchronize do
-        close_connection
-        @resource.signal
       end
 
       exit(0)
