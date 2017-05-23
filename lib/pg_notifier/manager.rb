@@ -52,6 +52,8 @@ module PgNotifier
         @mutex.synchronize do
           until @finish do
             connection.wait_for_notify do |channel, pid, payload|
+              logger.info "Notifying channel: #{channel}, pid: #{pid}, payload: #{payload}"
+
               subscriptions = subscriptions_by_channels.fetch channel, []
               subscriptions.each { |subscription| subscription.notify(channel, pid, payload) }
             end
@@ -84,9 +86,19 @@ module PgNotifier
       logger.info 'Shutting down'
 
       @finish = true
-      connection.finish unless connection.finished?
+      close_connection
 
       exit(0)
+    end
+
+    def close_connection
+      unless connection.finished?
+        channels.each do |channel|
+          connection.exec "UNLISTEN #{channel};"
+        end
+
+        connection.finish
+      end
     end
 
     def graceful_shutdown
@@ -95,7 +107,7 @@ module PgNotifier
       @finish = true
 
       @mutex.synchronize do
-        connection.finish unless connection.finished?
+        close_connection
         @resource.signal
       end
 
