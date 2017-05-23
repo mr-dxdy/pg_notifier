@@ -1,4 +1,5 @@
 require "pg_notifier/version"
+require "pg_notifier/errors"
 require "pg_notifier/subscription"
 require "pg_notifier/manager"
 

@@ -14,6 +14,8 @@ module PgNotifier
       @finish = false
       @mutex = Mutex.new
       @resource = ConditionVariable.new
+
+      Thread.abort_on_exception = true
     end
 
     def notify(channel, options = {}, &block)
@@ -47,6 +49,10 @@ module PgNotifier
       Thread.new do
         channels.each do |channel|
           pg_result = connection.exec "LISTEN #{channel};"
+
+          unless pg_result.result_status.eql? PG::PGRES_COMMAND_OK
+            raise ChannelNotLaunched, "Channel ##{channel} not launched"
+          end
         end
 
         @mutex.synchronize do
