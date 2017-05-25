@@ -4,14 +4,17 @@ require 'logger'
 
 module PgNotifier
   class Manager
-    attr_accessor :logger, :db_config
+    attr_accessor :logger, :db_config, :timeout
 
     def initialize(attrs = {})
       @logger = attrs.fetch :logger, Logger.new(STDOUT)
       @db_config = attrs.fetch :db_config , {}
+      @timeout = attrs.fetch :timeout, 0.1
 
       @finish = false
       Thread.abort_on_exception = true
+
+      @connection_mutex = Mutex.new
     end
 
     def notify(channel, options = {}, &block)
@@ -34,17 +37,9 @@ module PgNotifier
     def run
       logger.info "Starting pg_notifier for #{channels.count} channels: [ #{channels.join(' ')} ]"
 
-      sig_read, sig_write = IO.pipe
-
-      (%w[INT TERM HUP] & Signal.list.keys).each do |sig|
-        trap sig do
-          sig_write.puts(sig)
-        end
-      end
-
       Thread.new do
         channels.each do |channel|
-          pg_result = connection.exec "LISTEN #{channel};"
+          pg_result = @connection_mutex.synchronize { connection.exec "LISTEN #{channel};" }
 
           unless pg_result.result_status.eql? PG::PGRES_COMMAND_OK
             raise ChannelNotLaunched, "Channel ##{channel} not launched"
@@ -52,40 +47,39 @@ module PgNotifier
         end
 
         until @finish do
-          connection.wait_for_notify do |channel, pid, payload|
-            logger.info "Notifying channel: #{channel}, pid: #{pid}, payload: #{payload}"
+          if notification = wait_notification()
+            logger.info "Notifying channel: %s, pid: %s, payload: %s" % notification
 
-            subscriptions = subscriptions_by_channels.fetch channel, []
-            subscriptions.each { |subscription| subscription.notify(channel, pid, payload) }
+            subscriptions = subscriptions_by_channels.fetch notification.first, []
+            subscriptions.each { |subscription| subscription.notify(*notification) }
           end
         end
       end
-
-      while io = IO.select([sig_read])
-        sig = io.first[0].gets.chomp
-        handle_signal(sig)
-      end
-    end
-
-    def handle_signal(sig)
-      logger.debug "Got #{sig} signal"
-
-      shutdown if %w[INT TERM HUP].include? sig
     end
 
     def shutdown
       logger.info 'Shutting down'
 
       @finish = true
-      unless connection.finished?
-        channels.each do |channel|
-          connection.exec "UNLISTEN #{channel};"
-        end
 
-        connection.finish
+      @connection_mutex.synchronize do
+        unless connection.finished?
+          connection.async_exec "UNLISTEN *;"
+          connection.finish
+        end
       end
 
       exit(0)
+    end
+
+    private
+
+    def wait_notification
+      @connection_mutex.synchronize do
+        connection.wait_for_notify(timeout) do |channel, pid, payload|
+          return [channel, pid, payload]
+        end
+      end
     end
   end
 end
